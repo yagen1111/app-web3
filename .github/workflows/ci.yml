@@ -1,0 +1,128 @@
+# .github/workflows/ci.yml
+name: TradeTokenX CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # Smart Contract Tests
+  smart-contracts:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: smart-contracts/package-lock.json
+    
+    - name: Install dependencies
+      working-directory: ./smart-contracts
+      run: npm ci
+    
+    - name: Run Hardhat tests
+      working-directory: ./smart-contracts
+      run: npx hardhat test
+    
+    - name: Run contract size check
+      working-directory: ./smart-contracts
+      run: npx hardhat size-contracts
+
+  # Frontend Tests
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+    
+    - name: Install dependencies
+      working-directory: ./frontend
+      run: npm ci
+    
+    - name: Run tests
+      working-directory: ./frontend
+      run: npm test -- --coverage --watchAll=false
+    
+    - name: Build project
+      working-directory: ./frontend
+      run: npm run build
+    
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: frontend-build
+        path: frontend/build/
+
+  # Oracle Backend Tests
+  oracle:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      working-directory: ./oracle-backend
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run Python tests
+      working-directory: ./oracle-backend
+      run: python -m pytest tests/ -v
+    
+    - name: Check code style
+      working-directory: ./oracle-backend
+      run: |
+        pip install flake8
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+  # Security Scanning
+  security:
+    runs-on: ubuntu-latest
+    needs: [smart-contracts, frontend, oracle]
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Run Mythril security analysis
+      working-directory: ./smart-contracts
+      run: |
+        pip install mythril
+        myth analyze contracts/TeslaToken.sol --solc-json remappings.json || true
+    
+    - name: npm audit
+      working-directory: ./frontend
+      run: npm audit --audit-level high
+
+  # Deploy to staging
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [smart-contracts, frontend, oracle, security]
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Deploy to Vercel (Staging)
+      uses: amondnet/vercel-action@v20
+      with:
+        vercel-token: ${{ secrets.VERCEL_TOKEN }}
+        vercel-args: '--prod'
+        vercel-org-id: ${{ secrets.ORG_ID }}
+        vercel-project-id: ${{ secrets.PROJECT_ID }}
+        working-directory: ./frontend
+
